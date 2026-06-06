@@ -12,10 +12,12 @@ class Renderer:
         measurement: Measurement,
         contour: np.ndarray | None,
         threshold_mode: ThresholdMode,
-        gesture_active: bool = False,
         debug_mask: np.ndarray | None = None,
     ) -> np.ndarray:
         out = frame.copy()
+
+        if threshold_mode == ThresholdMode.MEDIAPIPE:
+            self._draw_crosshair(out)
 
         if debug_mask is not None:
             small = cv2.resize(debug_mask, (out.shape[1] // 4, out.shape[0] // 4))
@@ -39,15 +41,22 @@ class Renderer:
         if measurement.box_points is not None:
             cv2.drawContours(out, [measurement.box_points], 0, (255, 200, 0), 2)
 
-        self._draw_status_bar(out, measurement, threshold_mode, gesture_active)
+        self._draw_status_bar(out, measurement, threshold_mode)
         return out
+
+    def _draw_crosshair(self, frame: np.ndarray):
+        h, w = frame.shape[:2]
+        cx, cy = w // 2, h // 2
+        size = 20
+        color = (0, 255, 255)
+        cv2.line(frame, (cx - size, cy), (cx + size, cy), color, 1)
+        cv2.line(frame, (cx, cy - size), (cx, cy + size), color, 1)
 
     def _draw_status_bar(
         self,
         frame: np.ndarray,
         measurement: Measurement,
         threshold_mode: ThresholdMode,
-        gesture_active: bool,
     ):
         h, w = frame.shape[:2]
         overlay = frame.copy()
@@ -86,14 +95,3 @@ class Renderer:
             (200, 200, 200),
             1,
         )
-
-        if gesture_active:
-            cv2.putText(
-                frame,
-                "Gesto detectado - salvando...",
-                (10, h - 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 255),
-                2,
-            )

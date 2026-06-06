@@ -1,6 +1,6 @@
 # Medidor de Detritos — Visão Computacional
 
-Aplicação Python para **medição dimensional de detritos** em tempo real via webcam. Utiliza um marcador **ArUco** para calibração de escala e detecção automática por contorno (OpenCV). Também suporta captura por gesto de mão (MediaPipe).
+Aplicação Python para **medição dimensional de detritos** em tempo real via webcam. Utiliza um marcador **ArUco** para calibração de escala (OpenCV) e **segmentação interativa** do detrito (MediaPipe).
 
 ## Integrantes
 
@@ -12,7 +12,7 @@ Aplicação Python para **medição dimensional de detritos** em tempo real via 
 | Biblioteca | Uso |
 |---|---|
 | **OpenCV** (`opencv-contrib-python`) | Captura de vídeo, detecção ArUco, segmentação por contorno, overlay |
-| **MediaPipe** | Detecção de gestos de mão para salvar imagem sem teclado |
+| **MediaPipe** | Segmentação interativa do detrito (Interactive Segmenter) |
 | **NumPy** | Operações numéricas sobre frames e contornos |
 
 ## Pré-requisitos
@@ -39,15 +39,15 @@ python assets/generate_aruco.py
 
 Isso cria `assets/aruco_marker_id0.png`. Imprima em **escala 100% (tamanho real)**, sem redimensionar. O quadrado preto deve medir **5 cm × 5 cm**.
 
-## Baixar modelo MediaPipe (gestos de mão)
+## Baixar modelo MediaPipe (segmentação)
 
 A partir da versão 0.10.30, o MediaPipe usa a **Tasks API** e exige um arquivo de modelo:
 
 ```bash
-python assets/download_hand_model.py
+python assets/download_segmenter_model.py
 ```
 
-Isso cria `assets/hand_landmarker.task` (~7,5 MB).
+Isso cria `assets/interactive_segmenter.task` (~6 MB).
 
 ## Executar
 
@@ -124,8 +124,7 @@ Se ainda estiver lenta com a webcam externa, ajuste em `src/config.py`:
 ```python
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-GESTURE_PROCESS_EVERY_N_FRAMES = 3   # processa gestos com menos frequência
-GESTURE_INFERENCE_SCALE = 0.4        # MediaPipe usa imagem menor
+SEGMENTER_INFERENCE_SCALE = 0.4   # MediaPipe usa imagem menor
 ```
 
 Resoluções menores reduzem o processamento sem afetar a precisão da medição (desde que o ArUco e o detrito fiquem visíveis).
@@ -135,7 +134,8 @@ Resoluções menores reduzem o processamento sem afetar a precisão da medição
 ### Contorno impreciso
 
 - Use fundo contrastante (pedra escura em papel branco, ou vice-versa).
-- Pressione `T` para alternar modos: **auto**, **claro**, **escuro**, **adaptativo**.
+- Pressione `T` para alternar modos: **mediapipe** (padrão), **auto**, **claro**, **escuro**, **adaptativo**.
+- No modo **mediapipe**, centralize o detrito na mira (+) amarela do centro da tela.
 - Pressione `D` para ver a máscara branca/preta — se a pedra não aparecer sólida, mude o modo ou a iluminação.
 - Garanta resolução ≥ 960px de largura (`CAMERA_INDEX` correto + `FRAME_WIDTH = 1280`).
 
@@ -144,15 +144,15 @@ Resoluções menores reduzem o processamento sem afetar a precisão da medição
 1. Imprima e recorte o marcador ArUco.
 2. Coloque o marcador **ao lado do detrito**, no **mesmo plano** (mesma superfície).
 3. Posicione o detrito sobre um fundo com **bom contraste** (ex.: detrito escuro em superfície clara).
-4. Aponte a webcam — as medidas aparecem no topo da tela.
-5. Pressione **S** ou faça o gesto (punho fechado → indicador estendido) para salvar.
+4. Aponte a webcam — centralize o detrito na mira (+) — as medidas aparecem no topo da tela.
+5. Pressione **S** para salvar.
 
 ### Controles
 
 | Tecla | Ação |
 |---|---|
 | `S` | Salvar imagem anotada + JSON em `output/` |
-| `T` | Alternar modo de threshold (auto / claro / escuro / adaptativo) |
+| `T` | Alternar modo de detecção (mediapipe / auto / claro / escuro / adaptativo) |
 | `D` | Mostrar máscara de segmentação (debug do contorno) |
 | `R` | Resetar suavização das medidas |
 | `Q` / `Esc` | Sair |
@@ -172,13 +172,14 @@ debris-measurement/
 ├── requirements.txt
 ├── assets/
 │   └── generate_aruco.py
+│   └── download_segmenter_model.py
 ├── src/
 │   ├── camera.py
 │   ├── aruco_calibrator.py
 │   ├── debris_detector.py
+│   ├── debris_segmenter.py
 │   ├── measurer.py
 │   ├── renderer.py
-│   ├── gesture_controller.py
 │   └── snapshot.py
 └── output/          # imagens salvas (gerado em runtime)
 ```
@@ -188,4 +189,4 @@ debris-measurement/
 - Use boa iluminação uniforme.
 - Mantenha câmera e objeto estáveis durante a medição.
 - O marcador ArUco deve estar sempre visível no frame.
-- Se o detrito não for detectado, pressione `T` para alternar o modo de threshold.
+- Se o detrito não for detectado, pressione `T` para alternar o modo (tente **mediapipe** ou **adaptativo**).

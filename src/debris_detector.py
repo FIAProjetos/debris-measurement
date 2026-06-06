@@ -4,9 +4,11 @@ import cv2
 import numpy as np
 
 from src.config import MAX_CONTOUR_AREA, MIN_CONTOUR_AREA, MORPH_KERNEL_SIZE
+from src.debris_segmenter import DebrisSegmenter
 
 
 class ThresholdMode(Enum):
+    MEDIAPIPE = "mediapipe"
     AUTO = "auto"
     LIGHT_BG = "claro"
     DARK_BG = "escuro"
@@ -15,13 +17,24 @@ class ThresholdMode(Enum):
 
 class DebrisDetector:
     def __init__(self):
-        self.mode = ThresholdMode.AUTO
+        self.mode = ThresholdMode.MEDIAPIPE
+        self._segmenter: DebrisSegmenter | None = None
+
+    def close(self):
+        if self._segmenter is not None:
+            self._segmenter.close()
+            self._segmenter = None
 
     def cycle_mode(self) -> ThresholdMode:
         modes = list(ThresholdMode)
         idx = (modes.index(self.mode) + 1) % len(modes)
         self.mode = modes[idx]
         return self.mode
+
+    def _get_segmenter(self) -> DebrisSegmenter:
+        if self._segmenter is None:
+            self._segmenter = DebrisSegmenter()
+        return self._segmenter
 
     def _min_area(self, frame: np.ndarray) -> int:
         frame_area = frame.shape[0] * frame.shape[1]
@@ -37,7 +50,7 @@ class DebrisDetector:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         return cv2.bilateralFilter(gray, 9, 75, 75)
 
-    def _binarize(self, blurred: np.ndarray) -> np.ndarray:
+    def _binarize_opencv(self, blurred: np.ndarray) -> np.ndarray:
         if self.mode == ThresholdMode.ADAPTIVE:
             block = max(11, (min(blurred.shape[:2]) // 40) | 1)
             return cv2.adaptiveThreshold(
@@ -57,7 +70,6 @@ class DebrisDetector:
             _, binary = cv2.threshold(blurred, 127, 255, cv2.THRESH_BINARY)
             return binary
 
-        # AUTO: combina Otsu e adaptativo e mantém o melhor contorno candidato
         _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         block = max(11, (min(blurred.shape[:2]) // 40) | 1)
         adapt = cv2.adaptiveThreshold(
@@ -84,7 +96,6 @@ class DebrisDetector:
             if perimeter <= 0:
                 continue
 
-            # Prefer contours with irregular shape (pedras) over noise blobs
             circularity = 4 * np.pi * area / (perimeter * perimeter)
             score = area * (1.0 - min(circularity, 0.95))
 
@@ -94,28 +105,31 @@ class DebrisDetector:
 
         return best
 
-    def detect(
-        self, frame: np.ndarray, aruco_mask: np.ndarray | None
-    ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        blurred = self._preprocess(frame)
-        binary = self._binarize(blurred)
-
+    def _contour_from_mask(
+        self, frame: np.ndarray, binary: np.ndarray
+    ) -> tuple[np.ndarray | None, np.ndarray]:
         kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (MORPH_KERNEL_SIZE, MORPH_KERNEL_SIZE)
         )
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=3)
 
-        if aruco_mask is not None:
-            binary = cv2.bitwise_and(binary, cv2.bitwise_not(aruco_mask))
-
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
         best = self._pick_best_contour(
             contours, self._min_area(frame), self._max_area(frame)
         )
-
-        if best is None:
-            return None, binary
-
         return best, binary
+
+    def detect(
+        self, frame: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        if self.mode == ThresholdMode.MEDIAPIPE:
+            binary = self._get_segmenter().create_mask(frame)
+        else:
+            blurred = self._preprocess(frame)
+            binary = self._binarize_opencv(blurred)
+
+        if aruco_mask is not None:
+            binary = cv2.bitwise_and(binary, cv2.bitwise_not(aruco_mask))
+
+        return self._contour_from_mask(frame, binary)

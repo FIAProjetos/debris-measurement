@@ -1,13 +1,13 @@
-"""Baixa o modelo HandLandmarker exigido pelo MediaPipe Tasks API."""
+"""Baixa o modelo Interactive Segmenter exigido pelo MediaPipe Tasks API."""
 
 import urllib.request
 from pathlib import Path
 
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
-    "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+    "interactive_segmenter/magic_touch/float32/1/magic_touch.tflite"
 )
-OUT_PATH = Path(__file__).parent / "hand_landmarker.task"
+OUT_PATH = Path(__file__).parent / "interactive_segmenter.task"
 
 
 def main():
