@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+output/
+*.png
+!assets/aruco_marker_id0.png
+assets/hand_landmarker.task
