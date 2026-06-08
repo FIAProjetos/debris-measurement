@@ -92,41 +92,78 @@ class DebrisDetector:
             return np.concatenate(pixels)
         return blurred.ravel()
 
+    def _background_level_light(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> float:
+        border = self._border_pixels(blurred, aruco_mask)
+        border_med = float(np.median(border))
+
+        h, w = blurred.shape
+        center = blurred[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+        center_med = float(np.median(center))
+
+        if border_med >= 110:
+            return float(np.percentile(border, 65))
+        if center_med > border_med + 30:
+            return float(np.percentile(center, 70))
+        return float(np.percentile(border, 65))
+
     def _is_light_background(
         self, blurred: np.ndarray, aruco_mask: np.ndarray | None
     ) -> bool:
         border = self._border_pixels(blurred, aruco_mask)
         border_med = float(np.median(border))
 
-        if border_med >= 120:
-            return True
-        if border_med <= 90:
-            return False
-
         h, w = blurred.shape
         center = blurred[h // 3 : 2 * h // 3, w // 3 : 2 * w // 3]
         center_med = float(np.median(center))
+
+        if center_med >= 140 and center_med > border_med + 40:
+            return True
+        if border_med >= 120:
+            return True
+        if border_med <= 90 and center_med <= border_med + 25:
+            return False
+
         return border_med >= center_med + 10
 
-    def _binarize_light_bg(self, blurred: np.ndarray) -> np.ndarray:
-        block = self._adaptive_block(blurred, scale=32)
+    def _binarize_light_bg(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> np.ndarray:
+        working = blurred
+        border = self._border_pixels(blurred, aruco_mask)
+        border_med = float(np.median(border))
+        h, w = blurred.shape
+        center = blurred[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+        center_med = float(np.median(center))
+
+        if center_med > border_med + 30:
+            working = blurred.copy()
+            floor = int(max(0, border_med + 10))
+            working[working < floor] = int(center_med)
+
+        block = self._adaptive_block(working, scale=32)
         adapt = cv2.adaptiveThreshold(
-            blurred,
+            working,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV,
             block,
-            10,
+            6,
         )
-        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        result = cv2.bitwise_and(adapt, otsu)
 
-        if np.count_nonzero(result) < 80:
-            result = adapt
+        bg = self._background_level_light(blurred, aruco_mask)
+        debris_thresh = int(max(40, bg * 0.88))
+        _, relative = cv2.threshold(working, debris_thresh, 255, cv2.THRESH_BINARY_INV)
+        result = cv2.bitwise_and(adapt, relative)
+
+        if np.count_nonzero(result) < max(80, np.count_nonzero(relative) // 4):
+            result = relative
 
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        result = cv2.morphologyEx(result, cv2.MORPH_CLOSE, kernel, iterations=2)
         result = cv2.morphologyEx(result, cv2.MORPH_OPEN, kernel, iterations=1)
-        return self._remove_small_blobs(result)
+        return self._remove_small_blobs(result, min_px=80)
 
     def _binarize_dark_bg(
         self, blurred: np.ndarray, aruco_mask: np.ndarray | None
@@ -178,14 +215,17 @@ class DebrisDetector:
             return binary
 
         if self._is_light_background(blurred, aruco_mask):
-            return self._binarize_light_bg(blurred)
+            return self._binarize_light_bg(blurred, aruco_mask)
         return self._binarize_dark_bg(blurred, aruco_mask)
 
     def _pick_best_contour(
-        self, contours: list, min_area: int, max_area: int
+        self, contours: list, min_area: int, max_area: int, frame: np.ndarray
     ) -> np.ndarray | None:
         best = None
-        best_score = 0
+        best_score = 0.0
+        h, w = frame.shape[:2]
+        frame_cx, frame_cy = w // 2, h // 2
+
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area < min_area or area > max_area:
@@ -201,8 +241,17 @@ class DebrisDetector:
             if solidity < 0.4:
                 continue
 
+            m = cv2.moments(cnt)
+            if not m["m00"]:
+                continue
+            cx = int(m["m10"] / m["m00"])
+            cy = int(m["m01"] / m["m00"])
+            dist = np.hypot(cx - frame_cx, cy - frame_cy)
+            center_weight = max(0.35, 1.0 - dist / (0.5 * min(h, w)))
+
             circularity = 4 * np.pi * area / (perimeter * perimeter)
-            score = area * (1.0 - min(circularity, 0.95)) * min(solidity, 1.0)
+            shape = (1.0 - min(circularity, 0.95)) * min(solidity, 1.0)
+            score = area * shape * center_weight
 
             if score > best_score:
                 best = cnt
@@ -221,7 +270,7 @@ class DebrisDetector:
 
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         best = self._pick_best_contour(
-            contours, self._min_area(frame), self._max_area(frame)
+            contours, self._min_area(frame), self._max_area(frame), frame
         )
         return best, binary
 
