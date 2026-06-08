@@ -20,9 +20,8 @@ def main():
     cv2.resizeWindow(WINDOW_NAME, WINDOW_INITIAL_WIDTH, WINDOW_INITIAL_HEIGHT)
 
     print("Medidor de Detritos iniciado.")
-    print("Controles: S=salvar | T=modo deteccao | D=mascara debug | R=reset | Q=sair")
+    print("Controles: [S] Salvar | [T] Modo | [D] Mascara | [R] Reset | [Q] Sair")
     print("Modo mediapipe: centralize o detrito na mira (+) do centro da tela.")
-    print("Dica: arraste a borda da janela para redimensionar.")
 
     show_debug_mask = False
 

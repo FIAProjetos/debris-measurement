@@ -12,7 +12,7 @@ from src.config import SEGMENTER_INFERENCE_SCALE, SEGMENTER_MODEL_PATH
 
 
 class DebrisSegmenter:
-    """Segmenta o objeto sob o ponto central do frame (ideal para apontar a câmera)."""
+    """Segmenta o objeto sob o ponto central do frame."""
 
     def __init__(self):
         if not SEGMENTER_MODEL_PATH.exists():

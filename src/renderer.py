@@ -85,7 +85,7 @@ class Renderer:
                 2,
             )
 
-        help_text = f"Modo: {threshold_mode.value} | S=salvar T=modo D=mascara R=reset Q=sair"
+        help_text = f"Modo: {threshold_mode.value} | [S] Salvar [T] Modo [D] Mascara [R] Reset [Q] Sair"
         cv2.putText(
             frame,
             help_text,
