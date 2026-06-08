@@ -16,9 +16,6 @@ class Renderer:
     ) -> np.ndarray:
         out = frame.copy()
 
-        if threshold_mode == ThresholdMode.MEDIAPIPE:
-            self._draw_crosshair(out)
-
         if debug_mask is not None:
             small = cv2.resize(debug_mask, (out.shape[1] // 4, out.shape[0] // 4))
             colored = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
@@ -43,14 +40,6 @@ class Renderer:
 
         self._draw_status_bar(out, measurement, threshold_mode)
         return out
-
-    def _draw_crosshair(self, frame: np.ndarray):
-        h, w = frame.shape[:2]
-        cx, cy = w // 2, h // 2
-        size = 20
-        color = (0, 255, 255)
-        cv2.line(frame, (cx - size, cy), (cx + size, cy), color, 1)
-        cv2.line(frame, (cx, cy - size), (cx, cy + size), color, 1)
 
     def _draw_status_bar(
         self,

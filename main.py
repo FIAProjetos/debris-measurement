@@ -21,7 +21,7 @@ def main():
 
     print("Medidor de Detritos iniciado.")
     print("Controles: [S] Salvar | [T] Modo | [D] Mascara | [R] Reset | [Q] Sair")
-    print("Modo mediapipe: centralize o detrito na mira (+) do centro da tela.")
+    print("Modo padrao: auto (detecta fundo claro/escuro automaticamente).")
 
     show_debug_mask = False
 

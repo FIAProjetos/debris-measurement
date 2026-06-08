@@ -8,4 +8,3 @@ output/
 *.png
 !assets/aruco_marker_id0.png
 assets/hand_landmarker.task
-assets/interactive_segmenter.task

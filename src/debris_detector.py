@@ -4,11 +4,9 @@ import cv2
 import numpy as np
 
 from src.config import MAX_CONTOUR_AREA, MIN_CONTOUR_AREA, MORPH_KERNEL_SIZE
-from src.debris_segmenter import DebrisSegmenter
 
 
 class ThresholdMode(Enum):
-    MEDIAPIPE = "mediapipe"
     AUTO = "auto"
     LIGHT_BG = "claro"
     DARK_BG = "escuro"
@@ -17,24 +15,16 @@ class ThresholdMode(Enum):
 
 class DebrisDetector:
     def __init__(self):
-        self.mode = ThresholdMode.MEDIAPIPE
-        self._segmenter: DebrisSegmenter | None = None
+        self.mode = ThresholdMode.AUTO
 
     def close(self):
-        if self._segmenter is not None:
-            self._segmenter.close()
-            self._segmenter = None
+        pass
 
     def cycle_mode(self) -> ThresholdMode:
         modes = list(ThresholdMode)
         idx = (modes.index(self.mode) + 1) % len(modes)
         self.mode = modes[idx]
         return self.mode
-
-    def _get_segmenter(self) -> DebrisSegmenter:
-        if self._segmenter is None:
-            self._segmenter = DebrisSegmenter()
-        return self._segmenter
 
     def _min_area(self, frame: np.ndarray) -> int:
         frame_area = frame.shape[0] * frame.shape[1]
@@ -238,11 +228,8 @@ class DebrisDetector:
     def detect(
         self, frame: np.ndarray, aruco_mask: np.ndarray | None
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        if self.mode == ThresholdMode.MEDIAPIPE:
-            binary = self._get_segmenter().create_mask(frame)
-        else:
-            blurred = self._neutralize_aruco(self._preprocess(frame), aruco_mask)
-            binary = self._binarize_opencv(blurred, aruco_mask)
+        blurred = self._neutralize_aruco(self._preprocess(frame), aruco_mask)
+        binary = self._binarize_opencv(blurred, aruco_mask)
 
         if aruco_mask is not None:
             binary = cv2.bitwise_and(binary, cv2.bitwise_not(aruco_mask))
