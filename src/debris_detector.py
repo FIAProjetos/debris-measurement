@@ -46,8 +46,16 @@ class DebrisDetector:
         ref_area = 640 * 480
         return int(MAX_CONTOUR_AREA * frame_area / ref_area)
 
-    def _adaptive_block(self, blurred: np.ndarray) -> int:
-        return max(11, (min(blurred.shape[:2]) // 40) | 1)
+    def _adaptive_block(self, blurred: np.ndarray, scale: int = 40) -> int:
+        return max(11, (min(blurred.shape[:2]) // scale) | 1)
+
+    def _remove_small_blobs(self, binary: np.ndarray, min_px: int = 120) -> np.ndarray:
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        out = np.zeros_like(binary)
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] >= min_px:
+                out[labels == i] = 255
+        return out
 
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -111,41 +119,51 @@ class DebrisDetector:
         return border_med >= center_med + 10
 
     def _binarize_light_bg(self, blurred: np.ndarray) -> np.ndarray:
-        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        block = self._adaptive_block(blurred)
+        block = self._adaptive_block(blurred, scale=32)
         adapt = cv2.adaptiveThreshold(
             blurred,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV,
             block,
-            4,
+            10,
         )
-        return cv2.bitwise_or(otsu, adapt)
+        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        result = cv2.bitwise_and(adapt, otsu)
+
+        if np.count_nonzero(result) < 80:
+            result = adapt
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        result = cv2.morphologyEx(result, cv2.MORPH_OPEN, kernel, iterations=1)
+        return self._remove_small_blobs(result)
 
     def _binarize_dark_bg(
         self, blurred: np.ndarray, aruco_mask: np.ndarray | None
     ) -> np.ndarray:
-        block = self._adaptive_block(blurred)
+        block = self._adaptive_block(blurred, scale=32)
         adapt = cv2.adaptiveThreshold(
             blurred,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
             block,
-            6,
+            12,
         )
 
         border = self._border_pixels(blurred, aruco_mask)
-        bg = float(np.percentile(border, 30))
-        debris_thresh = int(min(220, bg * 1.4 + 15))
+        bg = float(np.percentile(border, 50))
+        debris_thresh = int(min(230, bg + max(40, (255 - bg) * 0.32)))
         _, relative = cv2.threshold(blurred, debris_thresh, 255, cv2.THRESH_BINARY)
         result = cv2.bitwise_and(adapt, relative)
 
         if np.count_nonzero(result) < 80:
-            result = adapt
+            strict_thresh = int(min(240, bg + max(55, (255 - bg) * 0.42)))
+            _, result = cv2.threshold(blurred, strict_thresh, 255, cv2.THRESH_BINARY)
 
-        return result
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        result = cv2.morphologyEx(result, cv2.MORPH_OPEN, kernel, iterations=2)
+        return self._remove_small_blobs(result, min_px=150)
 
     def _binarize_opencv(
         self, blurred: np.ndarray, aruco_mask: np.ndarray | None
@@ -187,8 +205,14 @@ class DebrisDetector:
             if perimeter <= 0:
                 continue
 
+            hull = cv2.convexHull(cnt)
+            hull_area = cv2.contourArea(hull)
+            solidity = area / hull_area if hull_area > 0 else 0.0
+            if solidity < 0.4:
+                continue
+
             circularity = 4 * np.pi * area / (perimeter * perimeter)
-            score = area * (1.0 - min(circularity, 0.95))
+            score = area * (1.0 - min(circularity, 0.95)) * min(solidity, 1.0)
 
             if score > best_score:
                 best = cnt
