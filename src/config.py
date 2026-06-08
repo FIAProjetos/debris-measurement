@@ -22,10 +22,6 @@ MIN_CONTOUR_AREA = 500
 MAX_CONTOUR_AREA = 500_000
 MORPH_KERNEL_SIZE = 5
 
-# MediaPipe — segmentação interativa (Tasks API)
-SEGMENTER_MODEL_PATH = ASSETS_DIR / "interactive_segmenter.task"
-SEGMENTER_INFERENCE_SCALE = 0.5
-
 # UI
 WINDOW_NAME = "Medidor de Detritos"
 WINDOW_INITIAL_WIDTH = 960

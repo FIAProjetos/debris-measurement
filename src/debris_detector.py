@@ -4,11 +4,9 @@ import cv2
 import numpy as np
 
 from src.config import MAX_CONTOUR_AREA, MIN_CONTOUR_AREA, MORPH_KERNEL_SIZE
-from src.debris_segmenter import DebrisSegmenter
 
 
 class ThresholdMode(Enum):
-    MEDIAPIPE = "mediapipe"
     AUTO = "auto"
     LIGHT_BG = "claro"
     DARK_BG = "escuro"
@@ -17,24 +15,16 @@ class ThresholdMode(Enum):
 
 class DebrisDetector:
     def __init__(self):
-        self.mode = ThresholdMode.MEDIAPIPE
-        self._segmenter: DebrisSegmenter | None = None
+        self.mode = ThresholdMode.AUTO
 
     def close(self):
-        if self._segmenter is not None:
-            self._segmenter.close()
-            self._segmenter = None
+        pass
 
     def cycle_mode(self) -> ThresholdMode:
         modes = list(ThresholdMode)
         idx = (modes.index(self.mode) + 1) % len(modes)
         self.mode = modes[idx]
         return self.mode
-
-    def _get_segmenter(self) -> DebrisSegmenter:
-        if self._segmenter is None:
-            self._segmenter = DebrisSegmenter()
-        return self._segmenter
 
     def _min_area(self, frame: np.ndarray) -> int:
         frame_area = frame.shape[0] * frame.shape[1]
@@ -46,13 +36,167 @@ class DebrisDetector:
         ref_area = 640 * 480
         return int(MAX_CONTOUR_AREA * frame_area / ref_area)
 
+    def _adaptive_block(self, blurred: np.ndarray, scale: int = 40) -> int:
+        return max(11, (min(blurred.shape[:2]) // scale) | 1)
+
+    def _remove_small_blobs(self, binary: np.ndarray, min_px: int = 120) -> np.ndarray:
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        out = np.zeros_like(binary)
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] >= min_px:
+                out[labels == i] = 255
+        return out
+
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         return cv2.bilateralFilter(gray, 9, 75, 75)
 
-    def _binarize_opencv(self, blurred: np.ndarray) -> np.ndarray:
+    def _neutralize_aruco(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> np.ndarray:
+        if aruco_mask is None:
+            return blurred
+        out = blurred.copy()
+        bg_pixels = out[aruco_mask == 0]
+        bg = int(np.median(bg_pixels)) if bg_pixels.size else int(np.median(out))
+        out[aruco_mask > 0] = bg
+        return out
+
+    def _border_pixels(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> np.ndarray:
+        h, w = blurred.shape
+        margin = max(4, min(h, w) // 25)
+        strips = [
+            (blurred[:margin, :], None if aruco_mask is None else aruco_mask[:margin, :]),
+            (
+                blurred[h - margin :, :],
+                None if aruco_mask is None else aruco_mask[h - margin :, :],
+            ),
+            (blurred[:, :margin], None if aruco_mask is None else aruco_mask[:, :margin]),
+            (
+                blurred[:, w - margin :],
+                None if aruco_mask is None else aruco_mask[:, w - margin :],
+            ),
+        ]
+        pixels = []
+        for strip, mask_strip in strips:
+            flat = strip.ravel()
+            if mask_strip is None:
+                pixels.append(flat)
+            else:
+                kept = flat[mask_strip.ravel() == 0]
+                if kept.size:
+                    pixels.append(kept)
+        if pixels:
+            return np.concatenate(pixels)
+        return blurred.ravel()
+
+    def _background_level_light(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> float:
+        border = self._border_pixels(blurred, aruco_mask)
+        border_med = float(np.median(border))
+
+        h, w = blurred.shape
+        center = blurred[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+        center_med = float(np.median(center))
+
+        if border_med >= 110:
+            return float(np.percentile(border, 65))
+        if center_med > border_med + 30:
+            return float(np.percentile(center, 70))
+        return float(np.percentile(border, 65))
+
+    def _is_light_background(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> bool:
+        border = self._border_pixels(blurred, aruco_mask)
+        border_med = float(np.median(border))
+
+        h, w = blurred.shape
+        center = blurred[h // 3 : 2 * h // 3, w // 3 : 2 * w // 3]
+        center_med = float(np.median(center))
+
+        if center_med >= 140 and center_med > border_med + 40:
+            return True
+        if border_med >= 120:
+            return True
+        if border_med <= 90 and center_med <= border_med + 25:
+            return False
+
+        return border_med >= center_med + 10
+
+    def _binarize_light_bg(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> np.ndarray:
+        working = blurred
+        border = self._border_pixels(blurred, aruco_mask)
+        border_med = float(np.median(border))
+        h, w = blurred.shape
+        center = blurred[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+        center_med = float(np.median(center))
+
+        if center_med > border_med + 30:
+            working = blurred.copy()
+            floor = int(max(0, border_med + 10))
+            working[working < floor] = int(center_med)
+
+        block = self._adaptive_block(working, scale=32)
+        adapt = cv2.adaptiveThreshold(
+            working,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            block,
+            6,
+        )
+
+        bg = self._background_level_light(blurred, aruco_mask)
+        debris_thresh = int(max(40, bg * 0.88))
+        _, relative = cv2.threshold(working, debris_thresh, 255, cv2.THRESH_BINARY_INV)
+        result = cv2.bitwise_and(adapt, relative)
+
+        if np.count_nonzero(result) < max(80, np.count_nonzero(relative) // 4):
+            result = relative
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        result = cv2.morphologyEx(result, cv2.MORPH_CLOSE, kernel, iterations=2)
+        result = cv2.morphologyEx(result, cv2.MORPH_OPEN, kernel, iterations=1)
+        return self._remove_small_blobs(result, min_px=80)
+
+    def _binarize_dark_bg(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> np.ndarray:
+        block = self._adaptive_block(blurred, scale=32)
+        adapt = cv2.adaptiveThreshold(
+            blurred,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            block,
+            12,
+        )
+
+        border = self._border_pixels(blurred, aruco_mask)
+        bg = float(np.percentile(border, 50))
+        debris_thresh = int(min(230, bg + max(40, (255 - bg) * 0.32)))
+        _, relative = cv2.threshold(blurred, debris_thresh, 255, cv2.THRESH_BINARY)
+        result = cv2.bitwise_and(adapt, relative)
+
+        if np.count_nonzero(result) < 80:
+            strict_thresh = int(min(240, bg + max(55, (255 - bg) * 0.42)))
+            _, result = cv2.threshold(blurred, strict_thresh, 255, cv2.THRESH_BINARY)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        result = cv2.morphologyEx(result, cv2.MORPH_OPEN, kernel, iterations=2)
+        return self._remove_small_blobs(result, min_px=150)
+
+    def _binarize_opencv(
+        self, blurred: np.ndarray, aruco_mask: np.ndarray | None
+    ) -> np.ndarray:
         if self.mode == ThresholdMode.ADAPTIVE:
-            block = max(11, (min(blurred.shape[:2]) // 40) | 1)
+            block = self._adaptive_block(blurred)
             return cv2.adaptiveThreshold(
                 blurred,
                 255,
@@ -70,23 +214,18 @@ class DebrisDetector:
             _, binary = cv2.threshold(blurred, 127, 255, cv2.THRESH_BINARY)
             return binary
 
-        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        block = max(11, (min(blurred.shape[:2]) // 40) | 1)
-        adapt = cv2.adaptiveThreshold(
-            blurred,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            block,
-            4,
-        )
-        return cv2.bitwise_or(otsu, adapt)
+        if self._is_light_background(blurred, aruco_mask):
+            return self._binarize_light_bg(blurred, aruco_mask)
+        return self._binarize_dark_bg(blurred, aruco_mask)
 
     def _pick_best_contour(
-        self, contours: list, min_area: int, max_area: int
+        self, contours: list, min_area: int, max_area: int, frame: np.ndarray
     ) -> np.ndarray | None:
         best = None
-        best_score = 0
+        best_score = 0.0
+        h, w = frame.shape[:2]
+        frame_cx, frame_cy = w // 2, h // 2
+
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area < min_area or area > max_area:
@@ -96,8 +235,23 @@ class DebrisDetector:
             if perimeter <= 0:
                 continue
 
+            hull = cv2.convexHull(cnt)
+            hull_area = cv2.contourArea(hull)
+            solidity = area / hull_area if hull_area > 0 else 0.0
+            if solidity < 0.4:
+                continue
+
+            m = cv2.moments(cnt)
+            if not m["m00"]:
+                continue
+            cx = int(m["m10"] / m["m00"])
+            cy = int(m["m01"] / m["m00"])
+            dist = np.hypot(cx - frame_cx, cy - frame_cy)
+            center_weight = max(0.35, 1.0 - dist / (0.5 * min(h, w)))
+
             circularity = 4 * np.pi * area / (perimeter * perimeter)
-            score = area * (1.0 - min(circularity, 0.95))
+            shape = (1.0 - min(circularity, 0.95)) * min(solidity, 1.0)
+            score = area * shape * center_weight
 
             if score > best_score:
                 best = cnt
@@ -116,18 +270,15 @@ class DebrisDetector:
 
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         best = self._pick_best_contour(
-            contours, self._min_area(frame), self._max_area(frame)
+            contours, self._min_area(frame), self._max_area(frame), frame
         )
         return best, binary
 
     def detect(
         self, frame: np.ndarray, aruco_mask: np.ndarray | None
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        if self.mode == ThresholdMode.MEDIAPIPE:
-            binary = self._get_segmenter().create_mask(frame)
-        else:
-            blurred = self._preprocess(frame)
-            binary = self._binarize_opencv(blurred)
+        blurred = self._neutralize_aruco(self._preprocess(frame), aruco_mask)
+        binary = self._binarize_opencv(blurred, aruco_mask)
 
         if aruco_mask is not None:
             binary = cv2.bitwise_and(binary, cv2.bitwise_not(aruco_mask))

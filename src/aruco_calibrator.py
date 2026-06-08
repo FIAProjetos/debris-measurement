@@ -49,8 +49,9 @@ class ArucoCalibrator:
 
         mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         cv2.fillConvexPoly(mask, pts.astype(np.int32), 255)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-        mask = cv2.dilate(mask, kernel, iterations=2)
+        margin = max(15, int(side_px * 0.2)) | 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (margin, margin))
+        mask = cv2.dilate(mask, kernel, iterations=3)
 
         return marker_corners, mask
 
