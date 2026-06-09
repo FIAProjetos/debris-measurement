@@ -10,8 +10,8 @@ from src.config import SMOOTHING_WINDOW
 
 class MeasureStatus(Enum):
     NO_CALIBRATION = "Aguardando marcador ArUco..."
-    NO_DETRITO = "Detrito não detectado"
-    OK = "Medição ativa"
+    NO_DETRITO = "Detrito nao detectado"
+    OK = "Medicao ativa"
 
 
 @dataclass
